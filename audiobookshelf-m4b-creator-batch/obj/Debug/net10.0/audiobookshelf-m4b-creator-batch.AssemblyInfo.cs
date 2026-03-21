@@ -12,11 +12,11 @@ using System.Reflection;
 
 [assembly: System.Reflection.AssemblyCompanyAttribute("audiobookshelf-m4b-creator-batch")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
-[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+dd30b8d268cb491f5d3dd4b2f68d54c5d6dcbb1d")]
+[assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.1.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.1+74cac9addebb34fd7187a379fcd1c68dd609bf7b")]
 [assembly: System.Reflection.AssemblyProductAttribute("audiobookshelf-m4b-creator-batch")]
 [assembly: System.Reflection.AssemblyTitleAttribute("audiobookshelf-m4b-creator-batch")]
-[assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersionAttribute("1.0.1.0")]
 
 // Von der MSBuild WriteCodeFragment-Klasse generiert.
 

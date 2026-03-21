@@ -296,34 +296,37 @@ static string ResolveFfprobePath(string ffmpegPath)
 
 static string[] CollectMp3Files(string folder)
 {
+    var result = new List<string>();
+    CollectMp3FilesRecursive(folder, result);
+    return result.ToArray();
+}
+
+static void CollectMp3FilesRecursive(string folder, List<string> result)
+{
     var comparer = new NaturalStringComparer();
 
-    // Get MP3s from the root folder
-    var rootMp3s = Directory.GetFiles(folder, "*.mp3")
-        .OrderBy(f => f, comparer)
-        .ToList();
+    // Add MP3s from current folder, naturally sorted
+    result.AddRange(
+        Directory.GetFiles(folder, "*.mp3").OrderBy(f => f, comparer)
+    );
 
-    // Get MP3s from subfolders (CD1, CD2, Disc 1, etc.), sorted by subfolder name then filename
-    var subfolderMp3s = Directory.GetDirectories(folder)
-        .OrderBy(d => d, comparer)
-        .SelectMany(d => Directory.GetFiles(d, "*.mp3").OrderBy(f => f, comparer))
-        .ToList();
-
-    // If there are MP3s in both root and subfolders, root first then subfolders
-    // If only in subfolders, just use those
-    if (rootMp3s.Count > 0 && subfolderMp3s.Count > 0)
-        rootMp3s.AddRange(subfolderMp3s);
-    else if (subfolderMp3s.Count > 0)
-        rootMp3s = subfolderMp3s;
-
-    return rootMp3s.ToArray();
+    // Recurse into subfolders, naturally sorted
+    foreach (string sub in Directory.GetDirectories(folder).OrderBy(d => d, comparer))
+    {
+        CollectMp3FilesRecursive(sub, result);
+    }
 }
 
 static string? FindCoverImage(string folder)
 {
+    return FindCoverImageRecursive(folder);
+}
+
+static string? FindCoverImageRecursive(string folder)
+{
     string[] imageExtensions = ["*.jpg", "*.jpeg", "*.png"];
 
-    // Check root folder first
+    // Check current folder
     foreach (string ext in imageExtensions)
     {
         string? image = Directory.GetFiles(folder, ext).FirstOrDefault();
@@ -331,15 +334,12 @@ static string? FindCoverImage(string folder)
             return image;
     }
 
-    // Check subfolders
-    foreach (string sub in Directory.GetDirectories(folder))
+    // Recurse into subfolders
+    foreach (string sub in Directory.GetDirectories(folder).OrderBy(d => d, new NaturalStringComparer()))
     {
-        foreach (string ext in imageExtensions)
-        {
-            string? image = Directory.GetFiles(sub, ext).FirstOrDefault();
-            if (image is not null)
-                return image;
-        }
+        string? image = FindCoverImageRecursive(sub);
+        if (image is not null)
+            return image;
     }
 
     return null;
@@ -516,38 +516,65 @@ static string FindCommonSuffix(string[] names)
 static string CleanAudiobookName(string folderName, string seriesName, string author,
     string commonPrefix, string commonSuffix)
 {
-    string cleaned = folderName;
+    // Normalize underscores and multiple dashes/hyphens to spaces
+    string cleaned = Regex.Replace(folderName, @"[_]+", " ");
+    cleaned = Regex.Replace(cleaned, @"[-–—]{1,}", " - ");
 
     // Remove common prefix/suffix shared by all folders
-    if (!string.IsNullOrWhiteSpace(commonPrefix))
-        cleaned = Regex.Replace(cleaned, "^" + Regex.Escape(commonPrefix), "", RegexOptions.IgnoreCase).Trim();
-    if (!string.IsNullOrWhiteSpace(commonSuffix))
-        cleaned = Regex.Replace(cleaned, Regex.Escape(commonSuffix) + "$", "", RegexOptions.IgnoreCase).Trim();
+    string normalizedPrefix = Regex.Replace(commonPrefix, @"[_]+", " ");
+    normalizedPrefix = Regex.Replace(normalizedPrefix, @"[-–—]{1,}", " - ");
+    string normalizedSuffix = Regex.Replace(commonSuffix, @"[_]+", " ");
+    normalizedSuffix = Regex.Replace(normalizedSuffix, @"[-–—]{1,}", " - ");
+    if (!string.IsNullOrWhiteSpace(normalizedPrefix))
+        cleaned = Regex.Replace(cleaned, "^" + Regex.Escape(normalizedPrefix), "", RegexOptions.IgnoreCase).Trim();
+    if (!string.IsNullOrWhiteSpace(normalizedSuffix))
+        cleaned = Regex.Replace(cleaned, Regex.Escape(normalizedSuffix) + "$", "", RegexOptions.IgnoreCase).Trim();
 
-    // Remove series name and author
-    cleaned = Regex.Replace(cleaned, Regex.Escape(seriesName), "", RegexOptions.IgnoreCase).Trim();
-    cleaned = Regex.Replace(cleaned, Regex.Escape(author), "", RegexOptions.IgnoreCase).Trim();
+    // Remove series name and author (also normalized for matching)
+    string normalizedSeries = Regex.Replace(seriesName, @"[_]+", " ");
+    string normalizedAuthor = Regex.Replace(author, @"[_]+", " ");
+    cleaned = Regex.Replace(cleaned, Regex.Escape(normalizedSeries), "", RegexOptions.IgnoreCase).Trim();
+    cleaned = Regex.Replace(cleaned, Regex.Escape(normalizedAuthor), "", RegexOptions.IgnoreCase).Trim();
 
     // Remove anything in square brackets or parentheses like [1980], (2013), [FLAC], etc.
     cleaned = Regex.Replace(cleaned, @"\[.*?\]", "").Trim();
     cleaned = Regex.Replace(cleaned, @"\(.*?\)", "").Trim();
 
     // Remove episode/Folge labels (German and English) with their number
-    cleaned = Regex.Replace(cleaned, @"\b(Folge|Episode|Ep\.?|Part|Teil|Chapter|Kapitel|Nr\.?|No\.?|Volume|Vol\.?|Band|Heft)\s*\d+\b", "", RegexOptions.IgnoreCase).Trim();
+    cleaned = Regex.Replace(cleaned, @"\b(Folge|Episode|Ep\.?|Part|Teil|Chapter|Kapitel|Nr\.?|No\.?|Volume|Vol\.?|Band|Heft)\s*\d*\b", "", RegexOptions.IgnoreCase).Trim();
 
     // Remove bitrate patterns like "320 kbit", "128kbps", "192 kbit/s"
     cleaned = Regex.Replace(cleaned, @"\b\d+\s*kbit(/s)?\b", "", RegexOptions.IgnoreCase).Trim();
     cleaned = Regex.Replace(cleaned, @"\b\d+\s*kbps\b", "", RegexOptions.IgnoreCase).Trim();
 
-    // Remove common source/quality tags
-    cleaned = Regex.Replace(cleaned, @"\b(TbT|Webrip|WEB-DL|WEB|WEBRip|MP3|FLAC|AAC|OGG|CBR|VBR|Lossless|Lossy|HQ|LQ|Remastered|Repack|Proper)\b", "", RegexOptions.IgnoreCase).Trim();
+    // Remove common source/quality tags and release group tags
+    cleaned = Regex.Replace(cleaned, @"\b(TbT|Webrip|WEB-DL|WEB|WEBRip|MP3|FLAC|AAC|OGG|CBR|VBR|Lossless|Lossy|HQ|LQ|Remastered|Repack|Proper|VOiCE|SAM|BIGFN|CD[\s-]?Rip|Rip)\b", "", RegexOptions.IgnoreCase).Trim();
+
+    // Remove disc/CD labels like "3CD", "CD1", "2CD", "Disc 1"
+    cleaned = Regex.Replace(cleaned, @"\b\d*\s*CDs?\s*\d*\b", "", RegexOptions.IgnoreCase).Trim();
+    cleaned = Regex.Replace(cleaned, @"\bDisc\s*\d*\b", "", RegexOptions.IgnoreCase).Trim();
+
+    // Remove language codes like "DE", "EN", "GER", "ENG"
+    cleaned = Regex.Replace(cleaned, @"\b(DE|EN|GER|ENG|FR|FRA|ES|IT|NL|PT)\b", "").Trim();
+
+    // Remove standalone 4-digit years like "2015"
+    cleaned = Regex.Replace(cleaned, @"\b(19|20)\d{2}\b", "").Trim();
 
     // Strip leftover leading/trailing dashes, whitespace, and common separators
     cleaned = Regex.Replace(cleaned, @"^[\s\-–—_.,;:]+", "");
     cleaned = Regex.Replace(cleaned, @"[\s\-–—_.,;:]+$", "");
 
+    // Strip leading episode/Folge labels that survived earlier cleaning (with or without number)
+    cleaned = Regex.Replace(cleaned, @"^(Folge|Episode|Ep\.?|Part|Teil|Chapter|Kapitel|Nr\.?|No\.?|Volume|Vol\.?|Band|Heft)\s*\d*\s*", "", RegexOptions.IgnoreCase).Trim();
+
+    // Strip leftover separators again after episode label removal
+    cleaned = Regex.Replace(cleaned, @"^[\s\-–—_.,;:]+", "");
+
     // Strip leading digits and separators so the name starts with A-Z
     cleaned = Regex.Replace(cleaned, @"^[\d\s\-–—_.,;:]+", "");
+
+    // Collapse multiple spaces
+    cleaned = Regex.Replace(cleaned, @"\s{2,}", " ").Trim();
 
     // If nothing meaningful remains, fall back to original
     if (string.IsNullOrWhiteSpace(cleaned) || !Regex.IsMatch(cleaned, @"^[A-Za-z]"))
