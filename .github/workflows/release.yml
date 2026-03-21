@@ -1,0 +1,77 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Extract version from csproj
+        id: version
+        run: |
+          VERSION=$(grep -oP '<Version>\K[^<]+' audiobookshelf-m4b-creator-batch/audiobookshelf-m4b-creator-batch.csproj)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      - name: Check if tag already exists
+        id: tag_check
+        run: |
+          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        if: steps.tag_check.outputs.exists == 'false'
+        run: dotnet publish audiobookshelf-m4b-creator-batch/audiobookshelf-m4b-creator-batch.csproj -c Release -o publish --self-contained false
+
+      - name: Zip build output
+        if: steps.tag_check.outputs.exists == 'false'
+        run: |
+          cd publish
+          zip -r ../audiobookshelf-m4b-creator-batch-v${{ steps.version.outputs.version }}.zip .
+
+      - name: Generate changelog from diff
+        if: steps.tag_check.outputs.exists == 'false'
+        id: changelog
+        run: |
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$PREVIOUS_TAG" ]; then
+            DIFF=$(git log --pretty=format:"- %s (%h)" HEAD)
+          else
+            DIFF=$(git log --pretty=format:"- %s (%h)" "${PREVIOUS_TAG}..HEAD")
+          fi
+          {
+            echo "changelog<<EOF"
+            echo "$DIFF"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: audiobookshelf-m4b-creator-batch v${{ steps.version.outputs.version }}
+          body: |
+            ## Changes
+
+            ${{ steps.changelog.outputs.changelog }}
+          files: audiobookshelf-m4b-creator-batch-v${{ steps.version.outputs.version }}.zip

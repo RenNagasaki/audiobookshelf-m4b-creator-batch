@@ -1,0 +1,15 @@
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\bin\Debug\net10.0\audiobookshelf-m4b-creator-batch.exe
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\bin\Debug\net10.0\audiobookshelf-m4b-creator-batch.deps.json
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\bin\Debug\net10.0\audiobookshelf-m4b-creator-batch.runtimeconfig.json
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\bin\Debug\net10.0\audiobookshelf-m4b-creator-batch.dll
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\bin\Debug\net10.0\audiobookshelf-m4b-creator-batch.pdb
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\obj\Debug\net10.0\audiobookshelf-m4b-creator-batch.GeneratedMSBuildEditorConfig.editorconfig
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\obj\Debug\net10.0\audiobookshelf-m4b-creator-batch.AssemblyInfoInputs.cache
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\obj\Debug\net10.0\audiobookshelf-m4b-creator-batch.AssemblyInfo.cs
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\obj\Debug\net10.0\audiobookshelf-m4b-creator-batch.csproj.CoreCompileInputs.cache
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\obj\Debug\net10.0\audiobookshelf-m4b-creator-batch.sourcelink.json
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\obj\Debug\net10.0\audiobookshelf-m4b-creator-batch.dll
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\obj\Debug\net10.0\refint\audiobookshelf-m4b-creator-batch.dll
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\obj\Debug\net10.0\audiobookshelf-m4b-creator-batch.pdb
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\obj\Debug\net10.0\audiobookshelf-m4b-creator-batch.genruntimeconfig.cache
+F:\Git-Repositories\audiobookshelf-m4b-creator-batch\audiobookshelf-m4b-creator-batch\obj\Debug\net10.0\ref\audiobookshelf-m4b-creator-batch.dll
