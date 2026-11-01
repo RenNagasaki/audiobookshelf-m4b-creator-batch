@@ -21,5 +21,5 @@ CLI (.NET 10) that turns a folder of MP3 audiobook folders (one series) into M4B
 - Every book is wrapped in try/catch: one failing book counts as failed but never aborts the parallel loop.
 - Metadata: title/album = `<Title>: <Series> <N>`, artist/album_artist = author, composer = narrators (Audiobookshelf reads narrator from composer), track = N.
 
-## Known pitfalls
-- `bin/` and `obj/` of the main project are tracked in git (no `.gitignore`); building dirties them.
+## Release
+- Pushing to master runs `.github/workflows/release.yml`: it releases only if the `<Version>` in the main .csproj has no git tag yet. Bump the version for a new release.
