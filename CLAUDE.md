@@ -17,6 +17,8 @@ CLI (.NET 10) that turns a folder of MP3 audiobook folders (one series) into M4B
 - Output: `<parent>/<Author>/<Series>/Vol. NNN - <Title> {<Narrators>}/<Title> {<Narrators>}.m4b`. Narrator in the path lets two releases of a series coexist in Audiobookshelf.
 - Scan skips `Done/`, `Vol. NNN - …` folders and the `<Author>/` output folder.
 - Existing output M4B → volume skipped (never overwritten). Failed ffmpeg run deletes the partial file. Success moves the source folder to `Done/`.
+- ffmpeg work files (concat list, chapter metadata) go to a per-book temp dir, never into the source folder — it is moved to `Done/` afterwards (writing them there crashed the run once).
+- Every book is wrapped in try/catch: one failing book counts as failed but never aborts the parallel loop.
 - Metadata: title/album = `<Title>: <Series> <N>`, artist/album_artist = author, composer = narrators (Audiobookshelf reads narrator from composer), track = N.
 
 ## Known pitfalls

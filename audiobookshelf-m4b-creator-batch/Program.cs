@@ -100,11 +100,16 @@ await Parallel.ForEachAsync(plan.Books, new ParallelOptions { MaxDegreeOfParalle
     if (coverImage is not null)
         Console.WriteLine($"  [{number}] Cover: {Path.GetFileName(coverImage)}");
 
-    Directory.CreateDirectory(book.OutputFolder);
-    string concatListFile = Path.Combine(folder, "_filelist.txt");
-    string metadataFile = Path.Combine(folder, "_metadata.txt");
+    // Work files live in the temp folder, not in the source folder: the source folder
+    // is moved to Done/ afterwards, and the files must not travel along or be deleted
+    // from a path that no longer exists.
+    string workDir = Directory.CreateTempSubdirectory("m4b-creator-").FullName;
+    string concatListFile = Path.Combine(workDir, "filelist.txt");
+    string metadataFile = Path.Combine(workDir, "metadata.txt");
+    bool converted = false;
     try
     {
+        Directory.CreateDirectory(book.OutputFolder);
         WriteConcatList(concatListFile, mp3Files);
 
         Console.WriteLine($"  [{number}] Reading chapter durations...");
@@ -112,31 +117,41 @@ await Parallel.ForEachAsync(plan.Books, new ParallelOptions { MaxDegreeOfParalle
         WriteChapterMetadata(metadataFile, mp3Files, durations);
         Console.WriteLine($"  [{number}] {durations.Count} chapter(s), converting...");
 
-        bool ok = await ConvertToM4bAsync(ffmpegPath, concatListFile, metadataFile, book.OutputFile, book.Title, author, book.Narrators, number, coverImage);
-        if (ok)
-        {
-            Console.WriteLine($"  [{number}] Done -> {Path.GetFileName(book.OutputFile)}");
-            Interlocked.Increment(ref successful);
-
-            // Move original folder to "Done" subfolder
-            string doneDir = Path.Combine(parentFolder, "Done");
-            Directory.CreateDirectory(doneDir);
-            string dest = Path.Combine(doneDir, folderName);
-            Directory.Move(folder, dest);
-            Console.WriteLine($"  [{number}] Moved source to Done/{folderName}");
-        }
-        else
-        {
-            Interlocked.Increment(ref failed);
-            // A partial file would make the next run skip this volume as "already exists".
-            File.Delete(book.OutputFile);
+        converted = await ConvertToM4bAsync(ffmpegPath, concatListFile, metadataFile, book.OutputFile, book.Title, author, book.Narrators, number, coverImage);
+        if (!converted)
             Console.Error.WriteLine($"  [{number}] FAILED — ffmpeg returned an error.");
-        }
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"  [{number}] FAILED — {ex.Message}");
     }
     finally
     {
-        File.Delete(concatListFile);
-        File.Delete(metadataFile);
+        Directory.Delete(workDir, recursive: true);
+    }
+
+    if (!converted)
+    {
+        Interlocked.Increment(ref failed);
+        // A partial file would make the next run skip this volume as "already exists".
+        File.Delete(book.OutputFile);
+        return;
+    }
+
+    Console.WriteLine($"  [{number}] Done -> {Path.GetFileName(book.OutputFile)}");
+    Interlocked.Increment(ref successful);
+
+    // Move original folder to "Done" subfolder. A failure here keeps the finished M4B.
+    try
+    {
+        string doneDir = Path.Combine(parentFolder, "Done");
+        Directory.CreateDirectory(doneDir);
+        Directory.Move(folder, Path.Combine(doneDir, folderName));
+        Console.WriteLine($"  [{number}] Moved source to Done/{folderName}");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"  [{number}] WARNING — M4B created, but moving the source to Done/ failed: {ex.Message}");
     }
 });
 
