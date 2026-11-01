@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
 using System.Text.RegularExpressions;
+using AudiobookshelfM4bCreator;
 
 Console.OutputEncoding = Encoding.UTF8;
 
@@ -15,14 +16,9 @@ if (string.IsNullOrWhiteSpace(author))
     return 1;
 }
 
-Console.Write("Narrator(s) (separate multiple with , or ;): ");
-string narratorInput = Console.ReadLine()?.Trim() ?? "";
-if (string.IsNullOrWhiteSpace(narratorInput))
-{
-    Console.Error.WriteLine("At least one narrator is required.");
-    return 1;
-}
-string narrators = string.Join(", ", Regex.Split(narratorInput, @"\s*[,;]\s*").Where(n => n.Length > 0));
+Console.Write($"Default narrator(s) (separate with , or ; — leave empty if every folder has a {BookPlanner.NarratorFileName}): ");
+string? defaultNarrators = BookPlanner.NormalizeNarrators(Console.ReadLine() ?? "");
+if (defaultNarrators.Length == 0) defaultNarrators = null;
 
 Console.Write("Series name: ");
 string seriesName = Console.ReadLine()?.Trim() ?? "";
@@ -34,14 +30,15 @@ if (string.IsNullOrWhiteSpace(seriesName))
 
 Console.WriteLine();
 Console.WriteLine($"  Author:    {author}");
-Console.WriteLine($"  Narrator:  {narrators}");
+Console.WriteLine($"  Narrator:  {defaultNarrators ?? $"(from {BookPlanner.NarratorFileName})"}");
 Console.WriteLine($"  Series:    {seriesName}");
 Console.WriteLine();
 
 string[] subfolders = Directory.GetDirectories(parentFolder)
     .Where(d => !Regex.IsMatch(Path.GetFileName(d)!, @"^Vol\.\s\d{3}\s-\s"))
     .Where(d => !string.Equals(Path.GetFileName(d), "Done", StringComparison.OrdinalIgnoreCase))
-    .OrderBy(d => d, new NaturalStringComparer())
+    .Where(d => !string.Equals(Path.GetFileName(d), author, StringComparison.OrdinalIgnoreCase))
+    .OrderBy(d => d, NaturalStringComparer.Instance)
     .ToArray();
 
 if (subfolders.Length == 0)
@@ -50,51 +47,50 @@ if (subfolders.Length == 0)
     return 1;
 }
 
-Console.WriteLine($"Found {subfolders.Length} audiobook folder(s):");
-foreach (string folder in subfolders)
-    Console.WriteLine($"  - {Path.GetFileName(folder)}");
-Console.WriteLine();
+var plan = BookPlanner.Plan(parentFolder, subfolders, author, seriesName, defaultNarrators);
+if (plan.Errors.Count > 0)
+{
+    foreach (string error in plan.Errors)
+        Console.Error.WriteLine($"ERROR: {error}");
+    return 1;
+}
 
-// Detect shared prefix/suffix across all folder names
-string[] folderNames = subfolders.Select(d => Path.GetFileName(d)!).ToArray();
-string commonPrefix = FindCommonPrefix(folderNames);
-string commonSuffix = FindCommonSuffix(folderNames);
-if (!string.IsNullOrWhiteSpace(commonPrefix))
-    Console.WriteLine($"Common prefix detected (will be removed): \"{commonPrefix}\"");
-if (!string.IsNullOrWhiteSpace(commonSuffix))
-    Console.WriteLine($"Common suffix detected (will be removed): \"{commonSuffix}\"");
+Console.WriteLine($"Found {plan.Books.Count} audiobook folder(s):");
+foreach (var book in plan.Books)
+    Console.WriteLine($"  Vol. {book.Number:D3}  {book.AudiobookName}  {{{book.Narrators}}}   <- {Path.GetFileName(book.SourceFolder)}");
+Console.WriteLine();
 
 string ffmpegPath = await ResolveFfmpegAsync();
 
-int successful = 0;
+int successful = 0, skipped = 0, failed = 0;
 int maxParallel = Math.Max(1, Environment.ProcessorCount / 2);
 Console.WriteLine($"Processing with {maxParallel} parallel worker(s)...");
 Console.WriteLine();
 
 string ffprobePath = ResolveFfprobePath(ffmpegPath);
 
-await Parallel.ForEachAsync(
-    Enumerable.Range(0, subfolders.Length),
-    new ParallelOptions { MaxDegreeOfParallelism = maxParallel },
-    async (i, ct) =>
+await Parallel.ForEachAsync(plan.Books, new ParallelOptions { MaxDegreeOfParallelism = maxParallel }, async (book, ct) =>
 {
-    int number = i + 1;
-    string folder = subfolders[i];
+    int number = book.Number;
+    string folder = book.SourceFolder;
     string folderName = Path.GetFileName(folder)!;
-    string audiobookName = CleanAudiobookName(folderName, seriesName, author, commonPrefix, commonSuffix);
-    string displayName = $"{audiobookName} {{{narrators}}}";
-    string title = $"{audiobookName}: {seriesName} {number}";
-    string outputFolder = Path.Combine(parentFolder, author, seriesName, $"Vol. {number:D3} - {displayName}");
-    Directory.CreateDirectory(outputFolder);
-    string outputFile = Path.Combine(outputFolder, $"{displayName}.m4b");
 
-    Console.WriteLine($"[{number}/{subfolders.Length}] Processing: {folderName}");
+    Console.WriteLine($"[Vol. {number}] Processing: {folderName}");
+
+    // Never overwrite an existing audiobook (e.g. the same volume from another release).
+    if (File.Exists(book.OutputFile))
+    {
+        Console.WriteLine($"  [{number}] Skipped — already exists: {book.OutputFile}");
+        Interlocked.Increment(ref skipped);
+        return;
+    }
 
     string[] mp3Files = CollectMp3Files(folder);
 
     if (mp3Files.Length == 0)
     {
         Console.WriteLine($"  [{number}] Skipped — no MP3 files found.");
+        Interlocked.Increment(ref skipped);
         return;
     }
 
@@ -104,6 +100,7 @@ await Parallel.ForEachAsync(
     if (coverImage is not null)
         Console.WriteLine($"  [{number}] Cover: {Path.GetFileName(coverImage)}");
 
+    Directory.CreateDirectory(book.OutputFolder);
     string concatListFile = Path.Combine(folder, "_filelist.txt");
     string metadataFile = Path.Combine(folder, "_metadata.txt");
     try
@@ -115,10 +112,10 @@ await Parallel.ForEachAsync(
         WriteChapterMetadata(metadataFile, mp3Files, durations);
         Console.WriteLine($"  [{number}] {durations.Count} chapter(s), converting...");
 
-        bool ok = await ConvertToM4bAsync(ffmpegPath, concatListFile, metadataFile, outputFile, title, author, narrators, number, coverImage);
+        bool ok = await ConvertToM4bAsync(ffmpegPath, concatListFile, metadataFile, book.OutputFile, book.Title, author, book.Narrators, number, coverImage);
         if (ok)
         {
-            Console.WriteLine($"  [{number}] Done -> {Path.GetFileName(outputFile)}");
+            Console.WriteLine($"  [{number}] Done -> {Path.GetFileName(book.OutputFile)}");
             Interlocked.Increment(ref successful);
 
             // Move original folder to "Done" subfolder
@@ -130,6 +127,9 @@ await Parallel.ForEachAsync(
         }
         else
         {
+            Interlocked.Increment(ref failed);
+            // A partial file would make the next run skip this volume as "already exists".
+            File.Delete(book.OutputFile);
             Console.Error.WriteLine($"  [{number}] FAILED — ffmpeg returned an error.");
         }
     }
@@ -140,8 +140,8 @@ await Parallel.ForEachAsync(
     }
 });
 
-Console.WriteLine($"Done. {successful}/{subfolders.Length} audiobook(s) created.");
-return successful == subfolders.Length ? 0 : 1;
+Console.WriteLine($"Done. {successful} created, {skipped} skipped, {failed} failed (of {plan.Books.Count}).");
+return failed == 0 ? 0 : 1;
 
 // ---------------------------------------------------------------------------
 
@@ -303,7 +303,7 @@ static string[] CollectMp3Files(string folder)
 
 static void CollectMp3FilesRecursive(string folder, List<string> result)
 {
-    var comparer = new NaturalStringComparer();
+    var comparer = NaturalStringComparer.Instance;
 
     // Add MP3s from current folder, naturally sorted
     result.AddRange(
@@ -335,7 +335,7 @@ static string? FindCoverImageRecursive(string folder)
     }
 
     // Recurse into subfolders
-    foreach (string sub in Directory.GetDirectories(folder).OrderBy(d => d, new NaturalStringComparer()))
+    foreach (string sub in Directory.GetDirectories(folder).OrderBy(d => d, NaturalStringComparer.Instance))
     {
         string? image = FindCoverImageRecursive(sub);
         if (image is not null)
@@ -473,160 +473,4 @@ static async Task<bool> ConvertToM4bAsync(
     }
 
     return true;
-}
-
-static string FindCommonPrefix(string[] names)
-{
-    if (names.Length < 2) return "";
-    string first = names[0];
-    int len = 0;
-    for (int i = 0; i < first.Length; i++)
-    {
-        char c = char.ToUpperInvariant(first[i]);
-        if (names.All(n => i < n.Length && char.ToUpperInvariant(n[i]) == c))
-            len = i + 1;
-        else
-            break;
-    }
-    // Trim to last word boundary to avoid cutting mid-word
-    string prefix = first[..len];
-    int lastSpace = prefix.LastIndexOfAny([' ', '-', '_', '.']);
-    return lastSpace > 0 ? prefix[..lastSpace] : "";
-}
-
-static string FindCommonSuffix(string[] names)
-{
-    if (names.Length < 2) return "";
-    string first = names[0];
-    int len = 0;
-    for (int i = 1; i <= first.Length; i++)
-    {
-        char c = char.ToUpperInvariant(first[^i]);
-        if (names.All(n => i <= n.Length && char.ToUpperInvariant(n[^i]) == c))
-            len = i;
-        else
-            break;
-    }
-    // Trim to last word boundary to avoid cutting mid-word
-    string suffix = first[^len..];
-    int firstSpace = suffix.IndexOfAny([' ', '-', '_', '.']);
-    return firstSpace >= 0 ? suffix[(firstSpace + 1)..] : "";
-}
-
-static string CleanAudiobookName(string folderName, string seriesName, string author,
-    string commonPrefix, string commonSuffix)
-{
-    // Normalize underscores and multiple dashes/hyphens to spaces
-    string cleaned = Regex.Replace(folderName, @"[_]+", " ");
-    cleaned = Regex.Replace(cleaned, @"[-–—]{1,}", " - ");
-
-    // Remove common prefix/suffix shared by all folders
-    string normalizedPrefix = Regex.Replace(commonPrefix, @"[_]+", " ");
-    normalizedPrefix = Regex.Replace(normalizedPrefix, @"[-–—]{1,}", " - ");
-    string normalizedSuffix = Regex.Replace(commonSuffix, @"[_]+", " ");
-    normalizedSuffix = Regex.Replace(normalizedSuffix, @"[-–—]{1,}", " - ");
-    if (!string.IsNullOrWhiteSpace(normalizedPrefix))
-        cleaned = Regex.Replace(cleaned, "^" + Regex.Escape(normalizedPrefix), "", RegexOptions.IgnoreCase).Trim();
-    if (!string.IsNullOrWhiteSpace(normalizedSuffix))
-        cleaned = Regex.Replace(cleaned, Regex.Escape(normalizedSuffix) + "$", "", RegexOptions.IgnoreCase).Trim();
-
-    // Remove series name and author (also normalized for matching)
-    string normalizedSeries = Regex.Replace(seriesName, @"[_]+", " ");
-    string normalizedAuthor = Regex.Replace(author, @"[_]+", " ");
-    cleaned = Regex.Replace(cleaned, Regex.Escape(normalizedSeries), "", RegexOptions.IgnoreCase).Trim();
-    cleaned = Regex.Replace(cleaned, Regex.Escape(normalizedAuthor), "", RegexOptions.IgnoreCase).Trim();
-
-    // Remove anything in square brackets or parentheses like [1980], (2013), [FLAC], etc.
-    cleaned = Regex.Replace(cleaned, @"\[.*?\]", "").Trim();
-    cleaned = Regex.Replace(cleaned, @"\(.*?\)", "").Trim();
-
-    // Remove episode/Folge labels (German and English) with their number
-    cleaned = Regex.Replace(cleaned, @"\b(Folge|Episode|Ep\.?|Part|Teil|Chapter|Kapitel|Nr\.?|No\.?|Volume|Vol\.?|Band|Heft)\s*\d*\b", "", RegexOptions.IgnoreCase).Trim();
-
-    // Remove bitrate patterns like "320 kbit", "128kbps", "192 kbit/s"
-    cleaned = Regex.Replace(cleaned, @"\b\d+\s*kbit(/s)?\b", "", RegexOptions.IgnoreCase).Trim();
-    cleaned = Regex.Replace(cleaned, @"\b\d+\s*kbps\b", "", RegexOptions.IgnoreCase).Trim();
-
-    // Remove common source/quality tags and release group tags
-    cleaned = Regex.Replace(cleaned, @"\b(TbT|Webrip|WEB-DL|WEB|WEBRip|MP3|FLAC|AAC|OGG|CBR|VBR|Lossless|Lossy|HQ|LQ|Remastered|Repack|Proper|VOiCE|SAM|BIGFN|CD[\s-]?Rip|Rip)\b", "", RegexOptions.IgnoreCase).Trim();
-
-    // Remove disc/CD labels like "3CD", "CD1", "2CD", "Disc 1"
-    cleaned = Regex.Replace(cleaned, @"\b\d*\s*CDs?\s*\d*\b", "", RegexOptions.IgnoreCase).Trim();
-    cleaned = Regex.Replace(cleaned, @"\bDisc\s*\d*\b", "", RegexOptions.IgnoreCase).Trim();
-
-    // Remove language codes like "DE", "EN", "GER", "ENG"
-    cleaned = Regex.Replace(cleaned, @"\b(DE|EN|GER|ENG|FR|FRA|ES|IT|NL|PT)\b", "").Trim();
-
-    // Remove standalone 4-digit years like "2015"
-    cleaned = Regex.Replace(cleaned, @"\b(19|20)\d{2}\b", "").Trim();
-
-    // Strip leftover leading/trailing dashes, whitespace, and common separators
-    cleaned = Regex.Replace(cleaned, @"^[\s\-–—_.,;:]+", "");
-    cleaned = Regex.Replace(cleaned, @"[\s\-–—_.,;:]+$", "");
-
-    // Strip leading episode/Folge labels that survived earlier cleaning (with or without number)
-    cleaned = Regex.Replace(cleaned, @"^(Folge|Episode|Ep\.?|Part|Teil|Chapter|Kapitel|Nr\.?|No\.?|Volume|Vol\.?|Band|Heft)\s*\d*\s*", "", RegexOptions.IgnoreCase).Trim();
-
-    // Strip leftover separators again after episode label removal
-    cleaned = Regex.Replace(cleaned, @"^[\s\-–—_.,;:]+", "");
-
-    // Strip leading digits and separators so the name starts with A-Z
-    cleaned = Regex.Replace(cleaned, @"^[\d\s\-–—_.,;:]+", "");
-
-    // Collapse multiple spaces
-    cleaned = Regex.Replace(cleaned, @"\s{2,}", " ").Trim();
-
-    // If nothing meaningful remains, fall back to original
-    if (string.IsNullOrWhiteSpace(cleaned) || !Regex.IsMatch(cleaned, @"^[A-Za-z]"))
-        return folderName;
-
-    return cleaned;
-}
-
-class NaturalStringComparer : IComparer<string>
-{
-    public int Compare(string? x, string? y)
-    {
-        if (x == y) return 0;
-        if (x is null) return -1;
-        if (y is null) return 1;
-
-        int ix = 0, iy = 0;
-
-        while (ix < x.Length && iy < y.Length)
-        {
-            bool xDigit = char.IsDigit(x[ix]);
-            bool yDigit = char.IsDigit(y[iy]);
-
-            if (xDigit && yDigit)
-            {
-                // Compare numeric segments by value
-                int xStart = ix, yStart = iy;
-                while (ix < x.Length && char.IsDigit(x[ix])) ix++;
-                while (iy < y.Length && char.IsDigit(y[iy])) iy++;
-
-                var xNum = x.AsSpan(xStart, ix - xStart);
-                var yNum = y.AsSpan(yStart, iy - yStart);
-
-                // Skip leading zeros for comparison
-                var xTrimmed = xNum.TrimStart('0');
-                var yTrimmed = yNum.TrimStart('0');
-
-                if (xTrimmed.Length != yTrimmed.Length)
-                    return xTrimmed.Length.CompareTo(yTrimmed.Length);
-
-                int numCmp = xTrimmed.CompareTo(yTrimmed, StringComparison.Ordinal);
-                if (numCmp != 0) return numCmp;
-            }
-            else
-            {
-                int cmp = char.ToUpperInvariant(x[ix]).CompareTo(char.ToUpperInvariant(y[iy]));
-                if (cmp != 0) return cmp;
-                ix++;
-                iy++;
-            }
-        }
-
-        return x.Length.CompareTo(y.Length);
-    }
 }
