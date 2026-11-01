@@ -22,4 +22,8 @@ CLI (.NET 10) that turns a folder of MP3 audiobook folders (one series) into M4B
 - Metadata: title/album = `<Title>: <Series> <N>`, artist/album_artist = author, composer = narrators (Audiobookshelf reads narrator from composer), track = N.
 
 ## Release
-- Pushing to master runs `.github/workflows/release.yml`: it releases only if the `<Version>` in the main .csproj has no git tag yet. Bump the version for a new release.
+- Pushing to master (on GitLab; the mirror job forwards it to GitHub) runs `.github/workflows/release.yml`: it releases only if the `<Version>` in the main .csproj has no git tag yet. Bump the version for a new release.
+
+## Git-Remotes
+- `origin` → `https://gitlab.echotools.cloud/private/audiobookshelf-m4b-creator-batch.git` (Hauptremote, hierhin pushen).
+- `github` → `https://github.com/RenNagasaki/audiobookshelf-m4b-creator-batch.git`: Nur-Lese-Spiegel, den der CI-Job `mirror-to-github` (`.gitlab-ci.yml`) bei jedem Push auf den Default-Branch oder einem Tag additiv befüllt (nie `--mirror`, sonst gehen GitHub-Release-Tags verloren). Nicht direkt nach GitHub pushen: der Job pusht mit `--force` und überschreibt das.
