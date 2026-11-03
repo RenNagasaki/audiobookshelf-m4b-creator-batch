@@ -94,6 +94,9 @@ public static class NameCleaner
         cleaned = Regex.Replace(cleaned, @"^[\s\-–—_.,;:]+", "");
         cleaned = Regex.Replace(cleaned, @"[\s\-–—_.,;:]+$", "");
 
+        // Strip a trailing genre label after a dash, as ebook releases add it: "Knochenarbeit - Roman"
+        cleaned = Regex.Replace(cleaned, @"\s+-\s+(Roman|Kurzroman|Thriller|Psychothriller|Krimi|Kriminalroman|Erzählung|Novelle|Kurzgeschichte|A Novel|Novel|Novella)$", "", RegexOptions.IgnoreCase).Trim();
+
         // Strip leading episode/Folge labels that survived earlier cleaning (with or without number)
         cleaned = Regex.Replace(cleaned, @"^(Folge|Episode|Ep\.?|Part|Teil|Chapter|Kapitel|Nr\.?|No\.?|Volume|Vol\.?|Band|Heft)\s*\d*\s*", "", RegexOptions.IgnoreCase).Trim();
 

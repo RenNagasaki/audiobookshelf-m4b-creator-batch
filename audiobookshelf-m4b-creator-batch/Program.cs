@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
-using System.Text.RegularExpressions;
 using AudiobookshelfM4bCreator;
 
 Console.OutputEncoding = Encoding.UTF8;
@@ -16,10 +15,6 @@ if (string.IsNullOrWhiteSpace(author))
     return 1;
 }
 
-Console.Write($"Default narrator(s) (separate with , or ; — leave empty if every folder has a {BookPlanner.NarratorFileName}): ");
-string? defaultNarrators = BookPlanner.NormalizeNarrators(Console.ReadLine() ?? "");
-if (defaultNarrators.Length == 0) defaultNarrators = null;
-
 Console.Write("Series name: ");
 string seriesName = Console.ReadLine()?.Trim() ?? "";
 if (string.IsNullOrWhiteSpace(seriesName))
@@ -28,26 +23,33 @@ if (string.IsNullOrWhiteSpace(seriesName))
     return 1;
 }
 
-Console.WriteLine();
-Console.WriteLine($"  Author:    {author}");
-Console.WriteLine($"  Narrator:  {defaultNarrators ?? $"(from {BookPlanner.NarratorFileName})"}");
-Console.WriteLine($"  Series:    {seriesName}");
-Console.WriteLine();
+var scan = SourceScanner.Scan(parentFolder, author);
+foreach (string name in scan.Ignored)
+    Console.WriteLine($"Ignored (no MP3 or ebook files): {name}");
 
-string[] subfolders = Directory.GetDirectories(parentFolder)
-    .Where(d => !Regex.IsMatch(Path.GetFileName(d)!, @"^Vol\.\s\d{3}\s-\s"))
-    .Where(d => !string.Equals(Path.GetFileName(d), "Done", StringComparison.OrdinalIgnoreCase))
-    .Where(d => !string.Equals(Path.GetFileName(d), author, StringComparison.OrdinalIgnoreCase))
-    .OrderBy(d => d, NaturalStringComparer.Instance)
-    .ToArray();
-
-if (subfolders.Length == 0)
+if (scan.Items.Count == 0)
 {
-    Console.Error.WriteLine("No subfolders found.");
+    Console.Error.WriteLine("No audiobook folders or ebooks found.");
     return 1;
 }
 
-var plan = BookPlanner.Plan(parentFolder, subfolders, author, seriesName, defaultNarrators);
+bool hasAudiobooks = scan.Items.Any(i => i.Kind == BookKind.Audiobook);
+string? defaultNarrators = null;
+if (hasAudiobooks)
+{
+    Console.Write($"Default narrator(s) (separate with , or ; — leave empty if every folder has a {BookPlanner.NarratorFileName}): ");
+    defaultNarrators = BookPlanner.NormalizeNarrators(Console.ReadLine() ?? "");
+    if (defaultNarrators.Length == 0) defaultNarrators = null;
+}
+
+Console.WriteLine();
+Console.WriteLine($"  Author:    {author}");
+if (hasAudiobooks)
+    Console.WriteLine($"  Narrator:  {defaultNarrators ?? $"(from {BookPlanner.NarratorFileName})"}");
+Console.WriteLine($"  Series:    {seriesName}");
+Console.WriteLine();
+
+var plan = BookPlanner.Plan(parentFolder, scan.Items, author, seriesName, defaultNarrators);
 if (plan.Errors.Count > 0)
 {
     foreach (string error in plan.Errors)
@@ -55,48 +57,91 @@ if (plan.Errors.Count > 0)
     return 1;
 }
 
-Console.WriteLine($"Found {plan.Books.Count} audiobook folder(s):");
+Console.WriteLine($"Found {plan.Books.Count} book(s):");
 foreach (var book in plan.Books)
-    Console.WriteLine($"  Vol. {book.Number:D3}  {book.AudiobookName}  {{{book.Narrators}}}   <- {Path.GetFileName(book.SourceFolder)}");
+{
+    string detail = book.Kind == BookKind.Audiobook
+        ? $"{{{book.Narrators}}}"
+        : $"[ebook: {string.Join(", ", book.EbookCopies.Select(c => Path.GetExtension(c.Target).TrimStart('.')))}]";
+    Console.WriteLine($"  Vol. {BookPlanner.FormatVolumeFolder(book.Number)}  {book.Name}  {detail}   <- {Path.GetFileName(book.Source.Path)}");
+}
 Console.WriteLine();
 
-string ffmpegPath = await ResolveFfmpegAsync();
+string ffmpegPath = "", ffprobePath = "";
+if (hasAudiobooks)
+{
+    ffmpegPath = await ResolveFfmpegAsync();
+    ffprobePath = ResolveFfprobePath(ffmpegPath);
+}
 
 int successful = 0, skipped = 0, failed = 0;
 int maxParallel = Math.Max(1, Environment.ProcessorCount / 2);
 Console.WriteLine($"Processing with {maxParallel} parallel worker(s)...");
 Console.WriteLine();
 
-string ffprobePath = ResolveFfprobePath(ffmpegPath);
-
 await Parallel.ForEachAsync(plan.Books, new ParallelOptions { MaxDegreeOfParallelism = maxParallel }, async (book, ct) =>
 {
-    int number = book.Number;
-    string folder = book.SourceFolder;
-    string folderName = Path.GetFileName(folder)!;
+    string number = BookPlanner.FormatVolume(book.Number);
+    string sourceName = Path.GetFileName(book.Source.Path)!;
 
-    Console.WriteLine($"[Vol. {number}] Processing: {folderName}");
+    Console.WriteLine($"[Vol. {number}] Processing: {sourceName}");
 
-    // Never overwrite an existing audiobook (e.g. the same volume from another release).
-    if (File.Exists(book.OutputFile))
+    // Never overwrite an existing book (e.g. the same volume from another release).
+    if (book.OutputFiles.Any(File.Exists))
     {
         Console.WriteLine($"  [{number}] Skipped — already exists: {book.OutputFile}");
         Interlocked.Increment(ref skipped);
         return;
     }
 
-    string[] mp3Files = CollectMp3Files(folder);
-
-    if (mp3Files.Length == 0)
+    bool ok = book.Kind == BookKind.Ebook
+        ? ImportEbook(book)
+        : await ConvertAudiobookAsync(book);
+    if (!ok)
     {
-        Console.WriteLine($"  [{number}] Skipped — no MP3 files found.");
-        Interlocked.Increment(ref skipped);
+        Interlocked.Increment(ref failed);
         return;
     }
 
+    Console.WriteLine($"  [{number}] Done -> {Path.GetFileName(book.OutputFile)}");
+    Interlocked.Increment(ref successful);
+
+    // Move the source to Done/. A failure here keeps the finished output.
+    try
+    {
+        SourceScanner.MoveToDone(parentFolder, book.Source);
+        Console.WriteLine($"  [{number}] Moved source to Done/{sourceName}");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"  [{number}] WARNING — output created, but moving the source to Done/ failed: {ex.Message}");
+    }
+});
+
+Console.WriteLine($"Done. {successful} created, {skipped} skipped, {failed} failed (of {plan.Books.Count}).");
+return failed == 0 ? 0 : 1;
+
+bool ImportEbook(BookPlan book)
+{
+    try
+    {
+        EbookImporter.Import(book, author, seriesName);
+        return true;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"  [{BookPlanner.FormatVolume(book.Number)}] FAILED — {ex.Message}");
+        return false;
+    }
+}
+
+async Task<bool> ConvertAudiobookAsync(BookPlan book)
+{
+    string number = BookPlanner.FormatVolume(book.Number);
+    string[] mp3Files = CollectMp3Files(book.Source.Path);
     Console.WriteLine($"  [{number}] {mp3Files.Length} MP3 file(s)");
 
-    string? coverImage = FindCoverImage(folder);
+    string? coverImage = SourceScanner.FindCoverImage(book.Source.Path);
     if (coverImage is not null)
         Console.WriteLine($"  [{number}] Cover: {Path.GetFileName(coverImage)}");
 
@@ -117,7 +162,7 @@ await Parallel.ForEachAsync(plan.Books, new ParallelOptions { MaxDegreeOfParalle
         WriteChapterMetadata(metadataFile, mp3Files, durations);
         Console.WriteLine($"  [{number}] {durations.Count} chapter(s), converting...");
 
-        converted = await ConvertToM4bAsync(ffmpegPath, concatListFile, metadataFile, book.OutputFile, book.Title, author, book.Narrators, number, coverImage);
+        converted = await ConvertToM4bAsync(ffmpegPath, concatListFile, metadataFile, book.OutputFile, book.Title, author, book.Narrators!, (int)book.Number, coverImage);
         if (!converted)
             Console.Error.WriteLine($"  [{number}] FAILED — ffmpeg returned an error.");
     }
@@ -130,33 +175,11 @@ await Parallel.ForEachAsync(plan.Books, new ParallelOptions { MaxDegreeOfParalle
         Directory.Delete(workDir, recursive: true);
     }
 
+    // A partial file would make the next run skip this volume as "already exists".
     if (!converted)
-    {
-        Interlocked.Increment(ref failed);
-        // A partial file would make the next run skip this volume as "already exists".
         File.Delete(book.OutputFile);
-        return;
-    }
-
-    Console.WriteLine($"  [{number}] Done -> {Path.GetFileName(book.OutputFile)}");
-    Interlocked.Increment(ref successful);
-
-    // Move original folder to "Done" subfolder. A failure here keeps the finished M4B.
-    try
-    {
-        string doneDir = Path.Combine(parentFolder, "Done");
-        Directory.CreateDirectory(doneDir);
-        Directory.Move(folder, Path.Combine(doneDir, folderName));
-        Console.WriteLine($"  [{number}] Moved source to Done/{folderName}");
-    }
-    catch (Exception ex)
-    {
-        Console.Error.WriteLine($"  [{number}] WARNING — M4B created, but moving the source to Done/ failed: {ex.Message}");
-    }
-});
-
-Console.WriteLine($"Done. {successful} created, {skipped} skipped, {failed} failed (of {plan.Books.Count}).");
-return failed == 0 ? 0 : 1;
+    return converted;
+}
 
 // ---------------------------------------------------------------------------
 
@@ -330,34 +353,6 @@ static void CollectMp3FilesRecursive(string folder, List<string> result)
     {
         CollectMp3FilesRecursive(sub, result);
     }
-}
-
-static string? FindCoverImage(string folder)
-{
-    return FindCoverImageRecursive(folder);
-}
-
-static string? FindCoverImageRecursive(string folder)
-{
-    string[] imageExtensions = ["*.jpg", "*.jpeg", "*.png"];
-
-    // Check current folder
-    foreach (string ext in imageExtensions)
-    {
-        string? image = Directory.GetFiles(folder, ext).FirstOrDefault();
-        if (image is not null)
-            return image;
-    }
-
-    // Recurse into subfolders
-    foreach (string sub in Directory.GetDirectories(folder).OrderBy(d => d, NaturalStringComparer.Instance))
-    {
-        string? image = FindCoverImageRecursive(sub);
-        if (image is not null)
-            return image;
-    }
-
-    return null;
 }
 
 static void WriteConcatList(string listFile, string[] mp3Files)

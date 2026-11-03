@@ -10,6 +10,9 @@ public class NameCleanerTests
     [InlineData("14 Kathy Reichs - Fahr zur Hölle (Temperance Brennan 14)", "Fahr zur Hölle")]
     [InlineData("09 Kathy Reichs - Hals über Kopf (Temperance Brennan 09)", "Hals über Kopf")]
     [InlineData("01 Über den Wolken", "Über den Wolken")]
+    [InlineData("02 - Knochenarbeit - Roman", "Knochenarbeit")]
+    [InlineData("15 5 - Fährte des Todes - Thriller", "Fährte des Todes")]
+    [InlineData("Der Roman", "Der Roman")]
     public void CleanAudiobookName_StripsNoise(string folder, string expected) =>
         Assert.Equal(expected, NameCleaner.CleanAudiobookName(folder, "Series", "Kathy Reichs", "", ""));
 
